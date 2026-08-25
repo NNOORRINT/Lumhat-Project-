@@ -1,0 +1,4 @@
+﻿# Ignore large source video files
+community/images/*.mov
+community/images/*.MOV
+
