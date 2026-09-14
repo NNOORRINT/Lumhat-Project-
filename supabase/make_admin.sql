@@ -11,7 +11,7 @@ select
   'admin'::public.user_role,
   'en'
 from auth.users as users
-where lower(users.email) = lower('son.norint@gmail.com')
+where lower(users.email) = lower('replace-with-your-admin@example.com')
 on conflict (id) do update
 set role = 'admin'::public.user_role;
 
@@ -19,4 +19,4 @@ set role = 'admin'::public.user_role;
 select users.email, profiles.display_name, profiles.role
 from auth.users as users
 join public.profiles as profiles on profiles.id = users.id
-where lower(users.email) = lower('son.norint@gmail.com');
+where lower(users.email) = lower('replace-with-your-admin@example.com');

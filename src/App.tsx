@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -47,17 +47,28 @@ import {
   type AuthUser,
 } from "./lib/supabase";
 import {
-  AdminContribute,
-  CompetitionLibrary,
-  CompetitionProblems,
-  DatabasePractice,
   normalizeProblem,
   problemText,
   PORTALS,
   type CompetitionRecord,
   type ProblemRecord,
-} from "./QuestionBank";
-import { MathContent } from "./MathContent";
+} from "./problem-data";
+
+const AdminContribute = lazy(() =>
+  import("./QuestionBank").then((module) => ({ default: module.AdminContribute })),
+);
+const CompetitionLibrary = lazy(() =>
+  import("./QuestionBank").then((module) => ({ default: module.CompetitionLibrary })),
+);
+const CompetitionProblems = lazy(() =>
+  import("./QuestionBank").then((module) => ({ default: module.CompetitionProblems })),
+);
+const DatabasePractice = lazy(() =>
+  import("./QuestionBank").then((module) => ({ default: module.DatabasePractice })),
+);
+const MathContent = lazy(() =>
+  import("./MathContent").then((module) => ({ default: module.MathContent })),
+);
 
 type Lang = "en" | "km";
 type Page =
@@ -1447,16 +1458,10 @@ function Practice({
     if (choice === null || checked) return;
     setChecked(true);
     if (!user || !supabase) return;
-    const { error } = await supabase
-      .from("attempts")
-      .insert({
-        user_id: user.id,
-        problem_id: null,
-        practice_key: "imo-number-theory-demo-001",
-        response: { choice },
-        is_correct: choice === 2,
-        elapsed_seconds: 522,
-      });
+    const { error } = await supabase.rpc("record_unranked_practice_attempt", {
+      target_key: "imo-number-theory-demo-001",
+      submitted_response: { choice },
+    });
     setSaveNote(
       error
         ? "Answer checked. Your database schema must be installed before activity can be saved."
@@ -2276,20 +2281,14 @@ function TruthfulPractice({
     if (choice === null || checked) return;
     setChecked(true);
     if (!user || !supabase) return;
-    const { error } = await supabase
-      .from("attempts")
-      .insert({
-        user_id: user.id,
-        problem_id: null,
-        practice_key: "lumhat-original-number-theory-001",
-        response: {
+    const { error } = await supabase.rpc("record_unranked_practice_attempt", {
+      target_key: "lumhat-original-number-theory-001",
+      submitted_response: {
           choice,
           topic: "Number Theory",
           title: "Prime divisors of n² + 1",
-        },
-        is_correct: choice === 2,
-        elapsed_seconds: seconds,
-      });
+      },
+    });
     setSaveNote(
       error
         ? "The answer was checked, but it could not be saved. Please install the latest database schema."
@@ -3299,6 +3298,8 @@ function Auth({ lang, go }: { lang: Lang; go: (p: Page) => void }) {
                   <UserRound />
                   <input
                     required
+                    autoComplete="name"
+                    maxLength={80}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Your full name"
@@ -3312,6 +3313,8 @@ function Auth({ lang, go }: { lang: Lang; go: (p: Page) => void }) {
                 <Globe2 />
                 <input
                   required
+                  autoComplete="email"
+                  maxLength={254}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   type="email"
@@ -3325,7 +3328,9 @@ function Auth({ lang, go }: { lang: Lang; go: (p: Page) => void }) {
                 <LockKeyhole />
                 <input
                   required
-                  minLength={6}
+                  autoComplete={signupMode ? "new-password" : "current-password"}
+                  minLength={signupMode ? 8 : 6}
+                  maxLength={128}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   type={show ? "text" : "password"}

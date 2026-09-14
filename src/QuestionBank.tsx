@@ -62,16 +62,16 @@ type QcmAnswer = {
   language?: ProblemLanguage;
   choices_en: string[];
   choices_km?: string[];
-  correct_index: number;
+  correct_index?: number;
   solution_image_url?: string;
   solution_image_alt?: string;
 };
 type OpenAnswer = {
   type: "open_ended";
   language?: ProblemLanguage;
-  accepted_answers: string[];
+  accepted_answers?: string[];
   accepted_answers_km?: string[];
-  display_answer: string;
+  display_answer?: string;
   display_answer_km?: string;
   solution_image_url?: string;
   solution_image_alt?: string;
@@ -1810,14 +1810,8 @@ export function DatabasePractice({
   const isStudy =
       problem.tags?.includes("NMO9") || problem.tags?.includes("NMO12"),
     isMathOlympiad = problem.tags?.includes("MO") ?? false,
-    isOpen = problem.problem_type === "open_ended",
-    qcm =
-      problem.answer?.type === "qcm" ||
-      problem.answer?.type === "multiple_choice"
-        ? problem.answer
-        : null;
-  const choices = problemChoices(problem);
-  const [started, rawSetStarted] = useState(false),
+    isOpen = problem.problem_type === "open_ended";
+  const [started, setStarted] = useState(false),
     [startedAt, setStartedAt] = useState(0),
     [seconds, setSeconds] = useState(0),
     [choice, setChoice] = useState<number | null>(null),
@@ -1827,24 +1821,55 @@ export function DatabasePractice({
     [solution, setSolution] = useState(false),
     [hint, setHint] = useState(false),
     [save, setSave] = useState(""),
+    [starting, setStarting] = useState(false),
+    [submitting, setSubmitting] = useState(false),
     [favorite, setFavorite] = useState(false),
     [favoriteBusy, setFavoriteBusy] = useState(false),
-    [leaders, setLeaders] = useState<Leader[]>([]);
+    [leaders, setLeaders] = useState<Leader[]>([]),
+    [revealedContent, setRevealedContent] = useState<{
+      answer: ProblemRecord["answer"];
+      solution_en: string | null;
+      solution_km: string | null;
+    } | null>(null),
+    [guestToken] = useState<string | null>(() => {
+      if (user) return null;
+      const key = `lumhat-problem-guest:${problem.id}`;
+      const token = crypto.randomUUID();
+      try {
+        const existing = localStorage.getItem(key);
+        if (existing) return existing;
+        localStorage.setItem(key, token);
+      } catch {
+        // A per-page token still works when browser storage is unavailable.
+      }
+      return token;
+    });
+  const displayProblem = useMemo(
+      () =>
+        revealedContent
+          ? normalizeProblem({
+              ...problem,
+              solution_en: revealedContent.solution_en,
+              solution_km: revealedContent.solution_km,
+              answer: revealedContent.answer
+                ? { ...problem.answer, ...revealedContent.answer }
+                : problem.answer,
+            })
+          : problem,
+      [problem, revealedContent],
+    ),
+    qcm =
+      displayProblem.answer?.type === "qcm" ||
+      displayProblem.answer?.type === "multiple_choice"
+        ? displayProblem.answer
+        : null,
+    choices = problemChoices(displayProblem);
   const expired = started && seconds >= problem.time_limit_seconds,
     locked = isOpen && (tries >= 3 || expired),
     hasSolution = Boolean(
-      problemText(problem, "solution") || problem.solution_image_url,
+      problemText(displayProblem, "solution") ||
+        displayProblem.solution_image_url,
     );
-  const timerKey = `lumhat-problem-start:${user?.id ?? "guest"}:${problem.id}`;
-  const setStarted = (value: boolean) => {
-    if (value && !startedAt) {
-      const stored = Number(localStorage.getItem(timerKey)),
-        start = stored || Date.now();
-      localStorage.setItem(timerKey, String(start));
-      setStartedAt(start);
-    }
-    rawSetStarted(value);
-  };
   useEffect(() => {
     if (!started || !startedAt || result === "correct" || locked) return;
     const tick = () => setSeconds(Math.floor((Date.now() - startedAt) / 1000));
@@ -1852,6 +1877,27 @@ export function DatabasePractice({
     const timer = window.setInterval(tick, 1000);
     return () => clearInterval(timer);
   }, [started, startedAt, result, locked]);
+  useEffect(() => {
+    if (!expired || revealedContent || !supabase) return;
+    supabase
+      .rpc("reveal_problem_solution", {
+        target_problem: problem.id,
+        guest_token: guestToken,
+      })
+      .then(({ data, error }) => {
+        if (error || !data) return;
+        const content = data as {
+          answer?: ProblemRecord["answer"];
+          solution_en?: string | null;
+          solution_km?: string | null;
+        };
+        setRevealedContent({
+          answer: content.answer ?? null,
+          solution_en: content.solution_en ?? null,
+          solution_km: content.solution_km ?? null,
+        });
+      });
+  }, [expired, revealedContent, guestToken, problem.id]);
   useEffect(() => {
     if (!isOpen || !user || !supabase) return;
     supabase
@@ -1992,55 +2038,83 @@ export function DatabasePractice({
         </article>
       </main>
     );
-  const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
-  const begin = () => {
-    const stored = Number(localStorage.getItem(timerKey)),
-      start = stored || Date.now();
-    localStorage.setItem(timerKey, String(start));
+  const begin = async () => {
+    if (!supabase || starting) return;
+    setStarting(true);
+    setSave("");
+    const { data, error } = await supabase.rpc("start_problem_session", {
+      target_problem: problem.id,
+      guest_token: guestToken,
+    });
+    setStarting(false);
+    const start = Date.parse(String(data));
+    if (error || !Number.isFinite(start)) {
+      setSave(
+        ui(
+          lang,
+          "The secure timer could not start. Please try again.",
+          "មិនអាចចាប់ផ្តើមម៉ោងសុវត្ថិភាពបានទេ។ សូមព្យាយាមម្តងទៀត។",
+        ),
+      );
+      return;
+    }
     setStartedAt(start);
+    setSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
     setStarted(true);
   };
   const submit = async () => {
-    if (locked || result === "correct") return;
-    const attempt = tries + 1,
-      accepted =
-        problem.answer?.type === "open_ended"
-          ? [
-              ...problem.answer.accepted_answers,
-              ...(problem.answer.accepted_answers_km ?? []),
-            ]
-          : [];
-    const correct = isOpen
-      ? accepted.some((x) => normalize(x) === normalize(response))
-      : choice === qcm?.correct_index;
-    if (isOpen) setTries(attempt);
-    setResult(correct ? "correct" : "incorrect");
-    if (correct) localStorage.removeItem(timerKey);
-    if (!user || !supabase) {
-      setSave(ui(lang, "Sign in to save attempts and join the leaderboard.", "ចូលគណនីដើម្បីរក្សាទុកការឆ្លើយ និងចូលតារាងពិន្ទុ។"));
+    if (submitting || locked || result === "correct") return;
+    if (!supabase) {
+      setSave(
+        ui(
+          lang,
+          "Answer checking is temporarily unavailable.",
+          "ការពិនិត្យចម្លើយមិនអាចប្រើបានបណ្តោះអាសន្ន។",
+        ),
+      );
       return;
     }
-    const { error } = await supabase.from("attempts").insert({
-      user_id: user.id,
-      problem_id: problem.id,
-      response: isOpen
-        ? {
-            answer: response,
-            attempt_number: attempt,
-            statement: problemText(problem, "statement"),
-            topic: problem.topic,
-          }
-        : {
-            choice,
-            statement: problemText(problem, "statement"),
-            topic: problem.topic,
-          },
-      is_correct: correct,
-      elapsed_seconds: isOpen && correct ? seconds : null,
+    setSubmitting(true);
+    setSave(ui(lang, "Checking securely…", "កំពុងពិនិត្យដោយសុវត្ថិភាព…"));
+    const { data, error } = await supabase.rpc("submit_problem_attempt", {
+      target_problem: problem.id,
+      submitted_response: isOpen ? { answer: response } : { choice },
+      guest_token: guestToken,
     });
+    setSubmitting(false);
+    const outcome = Array.isArray(data) ? data[0] : data;
+    if (error || !outcome) {
+      setSave(
+        ui(
+          lang,
+          "This answer could not be checked. Please try again.",
+          "មិនអាចពិនិត្យចម្លើយនេះបានទេ។ សូមព្យាយាមម្តងទៀត។",
+        ),
+      );
+      return;
+    }
+    const correct = Boolean(outcome.is_correct);
+    setTries(Number(outcome.tries_used ?? tries));
+    setSeconds(Number(outcome.elapsed_seconds ?? seconds));
+    setResult(correct ? "correct" : "incorrect");
+    if (
+      outcome.revealed_answer ||
+      outcome.revealed_solution_en ||
+      outcome.revealed_solution_km
+    ) {
+      setRevealedContent({
+        answer: outcome.revealed_answer ?? null,
+        solution_en: outcome.revealed_solution_en ?? null,
+        solution_km: outcome.revealed_solution_km ?? null,
+      });
+    }
     setSave(
-      error
-        ? ui(lang, "This attempt could not be saved.", "មិនអាចរក្សាទុកការឆ្លើយនេះបានទេ។")
+      !user
+        ? ui(
+            lang,
+            "Answer checked. Sign in to save results and join the leaderboard.",
+            "បានពិនិត្យចម្លើយ។ ចូលគណនីដើម្បីរក្សាទុកលទ្ធផល និងចូលតារាងពិន្ទុ។",
+          )
         : correct && isOpen
           ? ui(lang, "Your time is on the leaderboard.", "ពេលវេលារបស់អ្នកបានចូលក្នុងតារាងពិន្ទុ។")
           : ui(lang, "Attempt saved.", "បានរក្សាទុកការឆ្លើយ។"),
@@ -2117,8 +2191,14 @@ export function DatabasePractice({
                   {ui(lang, "Sign in first to record a leaderboard time.", "ចូលគណនីជាមុន ដើម្បីកត់ត្រាពេលវេលាក្នុងតារាងពិន្ទុ។")}
                 </p>
               )}
-              <button className="primary" onClick={() => setStarted(true)}>
-                {ui(lang, "Start problem", "ចាប់ផ្តើមលំហាត់")}
+              <button
+                className="primary"
+                onClick={() => void begin()}
+                disabled={starting || !supabase}
+              >
+                {starting
+                  ? ui(lang, "Starting…", "កំពុងចាប់ផ្តើម…")
+                  : ui(lang, "Start problem", "ចាប់ផ្តើមលំហាត់")}
                 <ArrowRight />
               </button>
             </div>
@@ -2150,6 +2230,7 @@ export function DatabasePractice({
                   <span>{ui(lang, "Your answer", "ចម្លើយរបស់អ្នក")}</span>
                   <input
                     disabled={locked || result === "correct"}
+                    maxLength={500}
                     value={response}
                     onChange={(e) => setResponse(e.target.value)}
                     placeholder={ui(lang, "Enter the final answer", "បញ្ចូលចម្លើយចុងក្រោយ")}
@@ -2225,13 +2306,16 @@ export function DatabasePractice({
                 <button
                   className="primary"
                   disabled={
+                    submitting ||
                     locked ||
                     result === "correct" ||
                     (isOpen ? !response.trim() : choice === null)
                   }
                   onClick={submit}
                 >
-                  {ui(lang, "Submit answer", "ដាក់ចម្លើយ")}
+                  {submitting
+                    ? ui(lang, "Checking…", "កំពុងពិនិត្យ…")
+                    : ui(lang, "Submit answer", "ដាក់ចម្លើយ")}
                 </button>
               )}
             </div>
@@ -2266,30 +2350,32 @@ export function DatabasePractice({
               )}
             {solution && (
               <div className="db-explanation solution">
-                {problem.answer?.type === "open_ended" && (
+                {displayProblem.answer?.type === "open_ended" && (
                   <>
                     <b>{ui(lang, "Answer", "ចម្លើយ")}</b>
                     <MathContent
                       className={problem.content_language === "km" ? "explanation-copy khmer" : "explanation-copy"}
                       lang={problem.content_language}
                     >
-                      {problem.content_language === "km"
-                        ? problem.answer.display_answer_km || problem.answer.display_answer
-                        : problem.answer.display_answer || problem.answer.display_answer_km}
+                      {displayProblem.content_language === "km"
+                        ? displayProblem.answer.display_answer_km ||
+                          displayProblem.answer.display_answer
+                        : displayProblem.answer.display_answer ||
+                          displayProblem.answer.display_answer_km}
                     </MathContent>
                   </>
                 )}
                 <b>{ui(lang, "Solution", "ដំណោះស្រាយ")}</b>
-                {problemText(problem, "solution") && (
+                {problemText(displayProblem, "solution") && (
                   <MathContent
                     className="explanation-copy"
-                    lang={problem.content_language}
+                    lang={displayProblem.content_language}
                   >
-                    {problemText(problem, "solution")}
+                    {problemText(displayProblem, "solution")}
                   </MathContent>
                 )}
-                {problem.solution_image_url && (
-                  <SolutionImage problem={problem} lang={lang} />
+                {displayProblem.solution_image_url && (
+                  <SolutionImage problem={displayProblem} lang={lang} />
                 )}
               </div>
             )}
@@ -2952,11 +3038,9 @@ export function AdminContribute({
     if (!supabase || !admin) return;
     setSaving(true);
     setNotice("");
-    const { data, error } = await supabase
-      .from("problems")
-      .select("*")
-      .eq("id", id)
-      .single();
+    const { data, error } = await supabase.rpc("get_problem_for_edit", {
+      target_problem: id,
+    });
     setSaving(false);
     if (error || !data) {
       setNotice(error?.message ?? "Problem could not be loaded.");

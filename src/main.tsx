@@ -7,5 +7,9 @@ import './question-bank.css'
 import 'katex/dist/katex.min.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode><App /></React.StrictMode>,
+  <React.StrictMode>
+    <React.Suspense fallback={<div className="app-loading" aria-label="Loading" />}>
+      <App />
+    </React.Suspense>
+  </React.StrictMode>,
 )
